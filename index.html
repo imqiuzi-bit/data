@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>A股沪深两市每日成交金额</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#161a21; --card2:#1c212b; --line:#262c38;
+    --text:#e8eaed; --muted:#9aa3b2; --blue:#4f9dff; --orange:#ff7a45;
+    --gold:#ffd666; --green:#2ec27e; --red:#ff5b5b;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1180px;margin:0 auto;padding:18px 18px 40px;}
+  header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:18px;justify-content:space-between;margin-bottom:14px;}
+  h1{font-size:20px;margin:0;font-weight:700;letter-spacing:.5px;}
+  h1 small{display:block;font-size:12px;color:var(--muted);font-weight:400;margin-top:4px;}
+  .latest{text-align:right;}
+  .latest .big{font-size:30px;font-weight:800;color:var(--gold);line-height:1.1;}
+  .latest .big small{font-size:13px;color:var(--muted);font-weight:500;margin-left:4px;}
+  .latest .meta{font-size:12px;color:var(--muted);margin-top:4px;}
+  .delta{font-weight:700;}
+  .delta.up{color:var(--red);} .delta.down{color:var(--green);}
+  .controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:10px 0 14px;
+    background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;}
+  .controls .label{color:var(--muted);font-size:13px;}
+  .seg{display:inline-flex;background:var(--card2);border:1px solid var(--line);border-radius:8px;overflow:hidden;}
+  .seg button{background:transparent;color:var(--muted);border:0;padding:7px 14px;cursor:pointer;font-size:14px;}
+  .seg button.active{background:var(--blue);color:#06101f;font-weight:700;}
+  .spacer{flex:1;}
+  .chk{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:13px;cursor:pointer;user-select:none;}
+  #chart{width:100%;height:62vh;min-height:420px;background:var(--card);
+    border:1px solid var(--line);border-radius:12px;}
+  .tablewrap{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    max-height:62vh;overflow:auto;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th,td{padding:8px 12px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap;}
+  th{position:sticky;top:0;background:var(--card2);color:var(--muted);font-weight:600;z-index:1;}
+  td:first-child,th:first-child{text-align:left;}
+  tbody tr:hover{background:var(--card2);}
+  .foot{margin-top:14px;color:var(--muted);font-size:12px;line-height:1.7;}
+  .empty{display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:15px;text-align:center;padding:30px;}
+  a{color:var(--blue);}
+  .pill{display:inline-block;background:var(--card2);border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-size:12px;color:var(--muted);margin-left:6px;}
+  .legend-inline{font-size:12px;color:var(--muted);}
+  .legend-inline b{color:var(--blue);} .legend-inline i{color:var(--orange);font-style:normal;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>沪深两市每日成交金额
+      <small>沪市 = 上证指数日成交额 · 深市 = 深证综指日成交额 · 单位：亿元</small>
+    </h1>
+    <div class="latest">
+      <div class="big" id="latest-total">—</div>
+      <div class="meta" id="latest-meta">加载中…</div>
+    </div>
+  </header>
+
+  <div class="controls">
+    <span class="label">粒度</span>
+    <span class="seg" id="seg-gran">
+      <button data-g="day" class="active">日</button>
+      <button data-g="week">周</button>
+      <button data-g="month">月</button>
+      <button data-g="year">年</button>
+    </span>
+    <label class="chk"><input type="checkbox" id="stacked" checked /> 堆叠(沪+深)</label>
+    <span class="spacer"></span>
+    <span class="seg" id="seg-view">
+      <button data-v="chart" class="active">图表</button>
+      <button data-v="table">表格</button>
+    </span>
+  </div>
+
+  <div id="chart"></div>
+  <div class="tablewrap" id="table" style="display:none;"></div>
+
+  <div class="foot" id="foot">
+    数据来源：东方财富（上证指数=沪市、深证综指=深市）日K线成交额 · 仅供参考，不构成投资建议。
+  </div>
+</div>
+
+<script src="echarts.min.js"></script>
+<script src="data.js"></script>
+<script>
+(function(){
+  "use strict";
+
+  // ---- 读取数据：优先 data.js 全局变量，回退 fetch data.json ----
+  var DATA = (window.A_SHARE_TURNOVER || null);
+  var rows = (DATA && DATA.data) ? DATA.data : [];
+
+  var state = { gran:"day", stacked:true, view:"chart" };
+  var chart = null;
+
+  function fmtYi(yi){
+    if(yi == null || isNaN(yi)) return "—";
+    if(Math.abs(yi) >= 10000) return (yi/10000).toFixed(2) + " 万亿";
+    return Math.round(yi).toLocaleString("zh-CN") + " 亿";
+  }
+  function fmtDate(d){ return d; }
+
+  // ISO 周 key: "YYYY-Www"
+  function isoWeek(dateStr){
+    var d = new Date(dateStr + "T00:00:00Z");
+    var dayNum = (d.getUTCDay() + 6) % 7; // 周一=0
+    d.setUTCDate(d.getUTCDate() - dayNum + 3); // 该周周四
+    var firstThu = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
+    var week = 1 + Math.round(((d - firstThu) / 86400000 - 3 + ((firstThu.getUTCDay() + 6) % 7)) / 7);
+    return d.getUTCFullYear() + "-W" + ("0" + week).slice(-2);
+  }
+
+  // 按粒度聚合（成交金额为区间求和）
+  function aggregate(g){
+    var map = {};
+    var order = [];
+    for(var i=0;i<rows.length;i++){
+      var r = rows[i];
+      var key;
+      if(g === "day") key = r.date;
+      else if(g === "week") key = isoWeek(r.date);
+      else if(g === "month") key = r.date.slice(0,7);
+      else key = r.date.slice(0,4);
+      if(!map[key]){ map[key] = {key:key, sh:0, sz:0, total:0, last:r.date}; order.push(key); }
+      map[key].sh += r.sh; map[key].sz += r.sz; map[key].total += r.total;
+      if(r.date > map[key].last) map[key].last = r.date;
+    }
+    order.sort();
+    return order.map(function(k){ return map[k]; });
+  }
+
+  function updateHeader(){
+    var el = document.getElementById("latest-total");
+    var meta = document.getElementById("latest-meta");
+    if(!rows.length){ el.textContent = "—"; meta.textContent = "暂无数据，请先运行 update.py 生成数据"; return; }
+    var last = rows[rows.length-1];
+    var prev = rows.length > 1 ? rows[rows.length-2] : null;
+    el.textContent = fmtYi(last.total);
+    var html = "最新 " + last.date + " · 沪市 " + fmtYi(last.sh) + " · 深市 " + fmtYi(last.sz);
+    if(prev){
+      var diff = last.total - prev.total;
+      var pct = prev.total ? (diff / prev.total * 100) : 0;
+      var cls = diff >= 0 ? "up" : "down";
+      var arrow = diff >= 0 ? "▲" : "▼";
+      html += "<br/><span class='delta " + cls + "'>" + arrow + " " + fmtYi(Math.abs(diff)) +
+              " (" + (diff>=0?"+":"") + pct.toFixed(2) + "%)</span> 较前一日";
+    }
+    if(DATA && DATA.updated_at){
+      html += "<br/><span class='pill'>更新于 " + DATA.updated_at + "</span>";
+    }
+    meta.innerHTML = html;
+  }
+
+  function renderChart(){
+    var dom = document.getElementById("chart");
+    if(!rows.length){
+      dom.innerHTML = "<div class='empty'>暂无数据。<br/>请运行 <b>python update.py</b> 抓取沪深两市历史成交金额（首次运行会自动回溯全部历史）。</div>";
+      return;
+    }
+    if(!chart) chart = echarts.init(dom, null, {renderer:"canvas"});
+    var groups = aggregate(state.gran);
+    var n = groups.length;
+    var cats = groups.map(function(x){ return x.key; });
+    var sh = groups.map(function(x){ return +x.sh.toFixed(2); });
+    var sz = groups.map(function(x){ return +x.sz.toFixed(2); });
+    var total = groups.map(function(x){ return +x.total.toFixed(2); });
+
+    var series = [];
+    var C_BLUE = "#4f9dff", C_ORANGE = "#ff7a45", C_GOLD = "#ffd666";
+    function lastColor(base){ return function(p){ return p.dataIndex === n-1 ? C_GOLD : base; }; }
+
+    if(state.stacked){
+      series.push({
+        name:"沪市", type:"bar", stack:"t", data:sh,
+        itemStyle:{ color:lastColor(C_BLUE) },
+        emphasis:{focus:"series"}
+      });
+      series.push({
+        name:"深市", type:"bar", stack:"t", data:sz,
+        itemStyle:{ color:lastColor(C_ORANGE) },
+        emphasis:{focus:"series"},
+        label:{ show:true, position:"top", color:"#fff", fontWeight:700,
+          formatter:function(p){ return p.dataIndex === n-1 ? fmtYi(total[n-1]) : ""; } }
+      });
+    } else {
+      series.push({
+        name:"两市合计", type:"bar", data:total,
+        itemStyle:{ color:lastColor(C_BLUE) },
+        emphasis:{focus:"series"},
+        label:{ show:true, position:"top", color:"#fff", fontWeight:700,
+          formatter:function(p){ return p.dataIndex === n-1 ? fmtYi(total[n-1]) : ""; } }
+      });
+    }
+
+    // 默认展示窗口（保证“最新一天”在右侧可见）
+    var showN = state.gran === "day" ? 1300 : state.gran === "week" ? 280 : state.gran === "month" ? 72 : n;
+    var startPct = n > showN ? Math.max(0, 100 * (1 - showN / n)) : 0;
+
+    var option = {
+      backgroundColor:"transparent",
+      grid:{ left:64, right:26, top:34, bottom:84 },
+      legend:{ show:true, top:4, textStyle:{color:"#c7cdd9"},
+        data: state.stacked ? ["沪市","深市"] : ["两市合计"] },
+      tooltip:{ trigger:"axis", axisPointer:{type:"shadow"},
+        backgroundColor:"rgba(22,26,33,.95)", borderColor:"#2a3140", borderWidth:1,
+        textStyle:{color:"#e8eaed"},
+        formatter:function(ps){
+          var g = groups[ps[0].dataIndex];
+          var lines = ["<b>" + g.key + "</b>" + (state.gran!=="day" ? "（"+g.last+"）" : "")];
+          if(state.stacked){
+            lines.push("沪市：" + fmtYi(g.sh));
+            lines.push("深市：" + fmtYi(g.sz));
+            lines.push("<b>合计：" + fmtYi(g.total) + "</b>");
+          } else {
+            lines.push("<b>两市合计：" + fmtYi(g.total) + "</b>");
+          }
+          return lines.join("<br/>");
+        }
+      },
+      xAxis:{ type:"category", data:cats, boundaryGap:true,
+        axisLine:{lineStyle:{color:"#39404e"}},
+        axisLabel:{ color:"#9aa3b2", hideOverlap:true,
+          formatter:function(v){ return state.gran==="day" ? v.slice(5) : v; } },
+        axisTick:{show:false} },
+      yAxis:{ type:"value", name:"亿元", nameTextStyle:{color:"#9aa3b2"},
+        axisLabel:{ color:"#9aa3b2", formatter:function(v){ return v>=10000 ? (v/10000).toFixed(0)+"万亿" : v; } },
+        splitLine:{lineStyle:{color:"rgba(255,255,255,.06)"}} },
+      dataZoom:[
+        { type:"inside", start:startPct, end:100 },
+        { type:"slider", start:startPct, end:100, height:22, bottom:24,
+          borderColor:"#2a3140", fillerColor:"rgba(79,157,255,.15)",
+          handleStyle:{color:"#4f9dff"}, textStyle:{color:"#9aa3b2"},
+          labelFormatter:function(v){ return ""; } }
+      ],
+      series:series
+    };
+    chart.setOption(option, true);
+  }
+
+  function renderTable(){
+    var box = document.getElementById("table");
+    if(!rows.length){ box.innerHTML = "<div class='empty'>暂无数据，请先运行 update.py。</div>"; return; }
+    var html = "<table><thead><tr><th>日期</th><th>沪市(亿)</th><th>深市(亿)</th><th>合计(亿)</th></tr></thead><tbody>";
+    // 倒序：最新在上
+    for(var i=rows.length-1;i>=0;i--){
+      var r = rows[i];
+      html += "<tr><td>"+r.date+"</td><td>"+r.sh.toLocaleString('zh-CN')+
+              "</td><td>"+r.sz.toLocaleString('zh-CN')+"</td><td><b>"+
+              r.total.toLocaleString('zh-CN')+"</b></td></tr>";
+    }
+    html += "</tbody></table>";
+    box.innerHTML = html;
+  }
+
+  function render(){
+    if(state.view === "chart"){
+      document.getElementById("chart").style.display = "block";
+      document.getElementById("table").style.display = "none";
+      renderChart();
+    } else {
+      document.getElementById("chart").style.display = "none";
+      document.getElementById("table").style.display = "block";
+      renderTable();
+    }
+  }
+
+  // ---- 事件绑定 ----
+  document.getElementById("seg-gran").addEventListener("click", function(e){
+    var b = e.target.closest("button"); if(!b) return;
+    state.gran = b.getAttribute("data-g");
+    [].forEach.call(this.children, function(c){ c.classList.toggle("active", c===b); });
+    render();
+  });
+  document.getElementById("seg-view").addEventListener("click", function(e){
+    var b = e.target.closest("button"); if(!b) return;
+    state.view = b.getAttribute("data-v");
+    [].forEach.call(this.children, function(c){ c.classList.toggle("active", c===b); });
+    render();
+  });
+  document.getElementById("stacked").addEventListener("change", function(e){
+    state.stacked = e.target.checked; render();
+  });
+
+  window.addEventListener("resize", function(){ if(chart) chart.resize(); });
+
+  // 若 data.js 未提供（例如直接 fetch 场景），尝试 fetch data.json
+  if(!DATA){
+    fetch("data.json").then(function(r){ return r.json(); }).then(function(j){
+      DATA = j; rows = j.data || [];
+      updateHeader(); document.getElementById("foot").innerHTML =
+        "数据来源：" + (j.source||"东方财富") + " · 单位：亿元 · 仅供参考，不构成投资建议。";
+      render();
+    }).catch(function(){ updateHeader(); render(); });
+  } else {
+    if(DATA.source) document.getElementById("foot").innerHTML =
+      "数据来源：" + DATA.source + " · 单位：亿元 · 仅供参考，不构成投资建议。";
+    updateHeader();
+    render();
+  }
+})();
+</script>
+</body>
+</html>
