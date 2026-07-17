@@ -2,8 +2,8 @@ name: 每日更新A股成交金额
 
 on:
   schedule:
-    # UTC 09:30 = 北京时间 17:30（收盘后，数据已定稿）
-    - cron: "30 9 * * *"
+    # UTC 07:30 = 北京时间 15:30（收盘后半小时，数据已定稿）
+    - cron: "30 7 * * *"
   workflow_dispatch: {}
 
 permissions:
