@@ -43,5 +43,14 @@ jobs:
           HF_SPACE: ${{ secrets.HF_SPACE }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
+          # 用全新空历史仓库只装当前网页文件，避免把含二进制(git-cmd.exe)的旧历史推给 HF 被拒
+          TMP=$(mktemp -d)
+          cp index.html echarts.min.js data.json data.js README.md .gitignore update.py "$TMP/" 2>/dev/null || true
+          cd "$TMP"
+          git init -q
+          git config user.email "bot@workbuddy.local"
+          git config user.name "workflow"
+          git add -A
+          git commit -qm "auto update $(date +%F)"
           git remote add space "https://$HF_USERNAME:$HF_TOKEN@huggingface.co/spaces/$HF_USERNAME/$HF_SPACE"
           git push --force space HEAD:main
