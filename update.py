@@ -65,12 +65,31 @@ SZ_SECID = "0.399106"   # 深证综指 -> 深市成交额
 
 SOURCE_DESC = "东方财富: 上证指数(沪市) + 深证综指(深市) 日K成交额"
 
+# 检测是否在 GitHub Actions 等 CI 环境中运行（云 IP 易被东方财富限流/超时）
+IS_CI = os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("CI") == "true"
+
+# CI 环境用更激进的超时策略：快速失败，把时间留给下一轮 cron 触发
+if IS_CI:
+    _TIMEOUT = 10       # 单请求 10 秒超时（本地 30 秒）
+    _RETRIES = 3        # 单节点重试 3 次（本地 6 次）
+    _MAX_ROUNDS = 2     # 整体 2 轮（本地 5 轮）
+    _CI_NODES = NODES[:4]  # 只用前 4 个节点
+else:
+    _TIMEOUT = 30
+    _RETRIES = 6
+    _MAX_ROUNDS = 5
+    _CI_NODES = None     # 本地用全部节点
+
 
 def bj_now():
     return dt.now(BJ)
 
 
-def http_get(url, retries=6, timeout=30):
+def http_get(url, retries=None, timeout=None):
+    if retries is None:
+        retries = _RETRIES
+    if timeout is None:
+        timeout = _TIMEOUT
     last = None
     for i in range(retries):
         try:
@@ -98,12 +117,15 @@ def http_get(url, retries=6, timeout=30):
     raise last
 
 
-def fetch_kline(secid, beg, end, max_rounds=5):
+def fetch_kline(secid, beg, end, max_rounds=None):
     """抓取某指数日 K 线，返回 {日期: 成交额(元)}。多节点轮询 + 整轮重试。"""
+    if max_rounds is None:
+        max_rounds = _MAX_ROUNDS
+    nodes = _CI_NODES if IS_CI else NODES
     fields2 = "f51,f52,f53,f54,f55,f56,f57"  # date,open,close,high,low,volume,amount
     last_err = None
     for rnd in range(max_rounds):
-        for node in NODES:
+        for node in nodes:
             url = ("%s/api/qt/stock/kline/get?secid=%s&ut=fa5fd1943c7b386f172d6893dbfba10b"
                    "&fields1=f1,f2,f3,f4,f5,f6&fields2=%s&klt=101&fqt=0&beg=%s&end=%s"
                    % (node, secid, fields2, beg, end))
@@ -172,6 +194,10 @@ def save(rows, updated_at):
 def main():
     force = "--force" in sys.argv
     backfill = "--backfill" in sys.argv
+
+    if IS_CI:
+        print("[CI 模式] 激进超时: %ds/请求, 重试%d次, %d轮, %d个节点"
+              % (_TIMEOUT, _RETRIES, _MAX_ROUNDS, len(_CI_NODES)))
 
     existing = load_existing()
     rows = existing["data"] if (existing and "data" in existing) else []
