@@ -2,8 +2,9 @@ name: 每日更新A股成交金额
 
 on:
   schedule:
-    # UTC 07:30 = 北京时间 15:30（收盘后半小时，数据已定稿）
-    - cron: "30 7 * * *"
+    # 北京时间 15:30 / 16:30 双触发，提高命中率（GitHub 公共仓库 cron 常漏触发）
+    - cron: "30 7 * * *"   # UTC 07:30 = 北京时间 15:30
+    - cron: "30 8 * * *"   # UTC 08:30 = 北京时间 16:30
   workflow_dispatch: {}
 
 permissions:
@@ -21,8 +22,17 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 抓取并更新数据
-        run: python update.py
+      - name: 抓取并更新数据（失败自动重试）
+        run: |
+          for i in 1 2 3 4 5; do
+            echo "=== 抓取尝试 $i/5 ==="
+            if python update.py; then
+              echo "抓取成功"
+              break
+            fi
+            echo "抓取失败，30s 后重试..."
+            sleep 30
+          done
 
       - name: 提交回 GitHub
         run: |
