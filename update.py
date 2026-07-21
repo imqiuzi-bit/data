@@ -70,7 +70,7 @@ def bj_now():
     return dt.now(BJ)
 
 
-def http_get(url, retries=4, timeout=30):
+def http_get(url, retries=6, timeout=30):
     last = None
     for i in range(retries):
         try:
@@ -78,52 +78,68 @@ def http_get(url, retries=4, timeout=30):
                 "User-Agent": UA,
                 "Referer": REFERER,
                 "Accept": "application/json, text/plain, */*",
+                "Accept-Encoding": "gzip, deflate",
             })
             with ureq.urlopen(req, timeout=timeout) as r:
-                return r.read().decode("utf-8", "ignore")
+                data = r.read()
+                enc = (r.headers.get("Content-Encoding") or "").lower()
+                if "gzip" in enc:
+                    import gzip as _gzip
+                    data = _gzip.decompress(data)
+                elif "deflate" in enc:
+                    import zlib as _zlib
+                    data = _zlib.decompress(data)
+                return data.decode("utf-8", "ignore")
         except Exception as e:
             last = e
-            wait = 2 ** i + 1
+            wait = min(2 ** i + 1, 30)
             print("  [warn] 请求失败 (%s)，%ds 后重试 (%d/%d)" % (e, wait, i + 1, retries))
             time.sleep(wait)
     raise last
 
 
-def fetch_kline(secid, beg, end):
-    """抓取某指数日 K 线，返回 {日期: 成交额(元)}。多节点轮询。"""
+def fetch_kline(secid, beg, end, max_rounds=5):
+    """抓取某指数日 K 线，返回 {日期: 成交额(元)}。多节点轮询 + 整轮重试。"""
     fields2 = "f51,f52,f53,f54,f55,f56,f57"  # date,open,close,high,low,volume,amount
     last_err = None
-    for node in NODES:
-        url = ("%s/api/qt/stock/kline/get?secid=%s&ut=fa5fd1943c7b386f172d6893dbfba10b"
-               "&fields1=f1,f2,f3,f4,f5,f6&fields2=%s&klt=101&fqt=0&beg=%s&end=%s"
-               % (node, secid, fields2, beg, end))
-        try:
-            txt = http_get(url)
-        except Exception as e:
-            last_err = e
-            continue
-        try:
-            obj = json.loads(txt)
-        except Exception:
-            last_err = "JSON 解析失败"
-            continue
-        klines = (obj.get("data") or {}).get("klines") or []
-        out = {}
-        for line in klines:
-            parts = line.split(",")
-            if len(parts) < 7:
-                continue
-            date = parts[0]
+    for rnd in range(max_rounds):
+        for node in NODES:
+            url = ("%s/api/qt/stock/kline/get?secid=%s&ut=fa5fd1943c7b386f172d6893dbfba10b"
+                   "&fields1=f1,f2,f3,f4,f5,f6&fields2=%s&klt=101&fqt=0&beg=%s&end=%s"
+                   % (node, secid, fields2, beg, end))
             try:
-                amount = float(parts[6])  # 元
-            except ValueError:
+                txt = http_get(url)
+            except Exception as e:
+                last_err = e
                 continue
-            out[date] = amount
-        if out:
-            return out
-        last_err = "空数据"
-    # 所有节点都失败
-    raise RuntimeError("抓取 %s 失败: %s" % (secid, last_err))
+            try:
+                obj = json.loads(txt)
+            except Exception:
+                last_err = "JSON 解析失败"
+                continue
+            klines = (obj.get("data") or {}).get("klines") or []
+            out = {}
+            for line in klines:
+                parts = line.split(",")
+                if len(parts) < 7:
+                    continue
+                date = parts[0]
+                try:
+                    amount = float(parts[6])  # 元
+                except ValueError:
+                    continue
+                out[date] = amount
+            if out:
+                return out
+            last_err = "空数据"
+        # 本轮所有节点都失败，整轮重试（间隔递增）
+        if rnd < max_rounds - 1:
+            wait = 15 + rnd * 10
+            print("  [warn] 第 %d/%d 轮全部节点失败 (%s)，%ds 后整轮重试..."
+                  % (rnd + 1, max_rounds, last_err, wait))
+            time.sleep(wait)
+    # 所有轮次都失败
+    raise RuntimeError("抓取 %s 失败(已重试 %d 轮): %s" % (secid, max_rounds, last_err))
 
 
 def load_existing():
