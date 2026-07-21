@@ -2,10 +2,12 @@ name: 每日更新A股成交金额
 
 on:
   schedule:
-    # 北京时间 15:30 / 16:30 双触发，提高命中率（GitHub 公共仓库 cron 常漏触发）
-    - cron: "30 7 * * *"   # UTC 07:30 = 北京时间 15:30
-    - cron: "30 8 * * *"   # UTC 08:30 = 北京时间 16:30
-  workflow_dispatch: {}
+    # 北京时间多个时间窗（15:30 / 16:30 / 17:30），任一成功即可补齐当日数据
+    # 单一 cron 在 GitHub 公共仓库不可靠，多窗口 + 脚本自愈可逼近 100% 覆盖
+    - cron: "30 7 * * *"   # 北京时间 15:30
+    - cron: "30 8 * * *"   # 北京时间 16:30
+    - cron: "30 9 * * *"   # 北京时间 17:30
+  workflow_dispatch: {}    # 支持手动触发（兜底）
 
 permissions:
   contents: write
@@ -14,11 +16,13 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: 检出仓库
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          token: ${{ secrets.PAT }}
 
-      - uses: actions/setup-python@v5
+      - name: 配置 Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -34,33 +38,74 @@ jobs:
             sleep 30
           done
 
-      - name: 提交回 GitHub
+      - name: 提交并推送到 GitHub
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data.json data.js
           if git diff --cached --quiet; then
-            echo "无新数据，跳过提交"
+            echo "无变化，无需提交"
           else
-            git commit -m "auto: 更新每日成交金额 $(date +%F)"
-            git push
+            git commit -m "自动更新 $(date +%Y-%m-%d) 沪深成交金额"
+            git push https://x-access-token:${{ secrets.PAT }}@github.com/imqiuzi-bit/data.git HEAD:main
           fi
 
-      - name: 推送到 Hugging Face Space
-        if: ${{ env.HF_USERNAME != '' && env.HF_TOKEN != '' }}
+      - name: 数据完整性看门狗（缺失当日数据则告警）
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, sys
+          from datetime import datetime as dt, timedelta
+          try:
+              from zoneinfo import ZoneInfo
+              BJ = ZoneInfo("Asia/Shanghai")
+          except Exception:
+              BJ = __import__("datetime").timezone(timedelta(hours=8))
+          now = dt.now(BJ)
+          d = json.load(open("data.json", encoding="utf-8"))
+          last = d["data"][-1]["date"]
+          # 计算最近一个交易日（跳过周末）
+          cur = now.date()
+          while cur.weekday() >= 5:  # 5=周六 6=周日
+              cur -= timedelta(days=1)
+          latest_trading = cur.strftime("%Y-%m-%d")
+          print("当前最新数据日期:", last)
+          print("最近交易日应为:", latest_trading)
+          if now.hour < 15:
+              print("盘前，跳过校验")
+              sys.exit(0)
+          if last >= latest_trading:
+              print("✅ 数据已是最新")
+              sys.exit(0)
+          # 数据落后：判断是“真漏更”还是“长假”
+          last_dt = dt.strptime(last, "%Y-%m-%d").date()
+          behind = (now.date() - last_dt).days
+          if behind <= 4:
+              print("⚠️ 警告：最新数据(%s)落后于最近交易日(%s)，当日数据可能缺失！" % (last, latest_trading))
+              sys.exit(1)  # 构建失败 -> 通知仓库所有者
+          else:
+              print("ℹ️ 数据落后 %d 天，疑似法定长假，仅提示不报错。" % behind)
+              sys.exit(0)
+          PY
+
+      - name: 推送数据到 HuggingFace Space
+        if: always()
+        continue-on-error: true
         env:
-          HF_USERNAME: ${{ secrets.HF_USERNAME }}
-          HF_SPACE: ${{ secrets.HF_SPACE }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # 用全新空历史仓库只装当前网页文件，避免把含二进制(git-cmd.exe)的旧历史推给 HF 被拒
-          TMP=$(mktemp -d)
-          cp index.html echarts.min.js data.json data.js README.md .gitignore update.py "$TMP/" 2>/dev/null || true
-          cd "$TMP"
-          git init -q
-          git config user.email "bot@workbuddy.local"
-          git config user.name "workflow"
-          git add -A
-          git commit -qm "auto update $(date +%F)"
-          git remote add space "https://$HF_USERNAME:$HF_TOKEN@huggingface.co/spaces/$HF_USERNAME/$HF_SPACE"
-          git push --force space HEAD:main
+          pip install -q huggingface_hub 2>/dev/null || true
+          python - <<'PY'
+          import os, json
+          from huggingface_hub import HfApi
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          repo_id = "imqiuzi/data"
+          for f in ["data.json", "data.js", "index.html", "echarts.min.js"]:
+              if os.path.exists(f):
+                  try:
+                      api.upload_file(path_or_fileobj=f, path_in_repo=f,
+                                      repo_id=repo_id, repo_type="space")
+                      print("上传", f, "成功")
+                  except Exception as e:
+                      print("上传", f, "失败:", e)
+          PY
