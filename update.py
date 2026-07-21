@@ -37,6 +37,7 @@ try:
     from zoneinfo import ZoneInfo
     BJ = ZoneInfo("Asia/Shanghai")
 except Exception:
+    # CI 环境(如 GitHub Actions)常缺 zoneinfo 数据库，用固定偏移兜底
     BJ = datetime.timezone(timedelta(hours=8))
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -206,8 +207,8 @@ def main():
 
     now = bj_now()
     today_str = now.strftime("%Y-%m-%d")
-    # 仅在收盘后(>=15:00 北京时间)才纳入“当天”数据
-    include_today = now.hour >= 15
+    # CI 环境的 cron 触发时间已在收盘后，跳过此检查以避免时区判断偏差漏数据。
+    include_today = (now.hour >= 15) or IS_CI
 
     if backfill:
         beg = "19901219"
