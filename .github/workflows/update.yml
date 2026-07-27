@@ -26,7 +26,38 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: 检查当日数据是否已入库（已入库则跳过抓取）
+        id: check
+        run: |
+          python - <<'PY'
+          import json, os
+          from datetime import datetime as dt, timedelta, timezone
+          try:
+              from zoneinfo import ZoneInfo
+              BJ = ZoneInfo("Asia/Shanghai")
+          except Exception:
+              BJ = timezone(timedelta(hours=8))
+          now = dt.now(BJ)
+          d = json.load(open("data.json", encoding="utf-8"))
+          last = d["data"][-1]["date"]
+          # 最近一个应有数据的交易日（跳过周末）
+          cur = now.date()
+          while cur.weekday() >= 5:
+              cur -= timedelta(days=1)
+          latest_trading = cur.strftime("%Y-%m-%d")
+          manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+          if last >= latest_trading and not manual:
+              need = "false"
+              print("✅ 当日数据(%s)已入库，本次跳过抓取，不再重复请求数据源" % last)
+          else:
+              need = "true"
+              print("需要更新：库内最新=%s，目标交易日=%s，手动触发=%s" % (last, latest_trading, manual))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("need_update=%s\n" % need)
+          PY
+
       - name: 抓取并更新数据（失败自动重试）
+        if: steps.check.outputs.need_update == 'true'
         run: |
           for i in 1 2 3 4 5; do
             echo "=== 抓取尝试 $i/5 ==="
@@ -39,6 +70,7 @@ jobs:
           done
 
       - name: 提交并推送到 GitHub
+        if: steps.check.outputs.need_update == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -89,7 +121,7 @@ jobs:
           PY
 
       - name: 推送数据到 HuggingFace Space
-        if: always()
+        if: steps.check.outputs.need_update == 'true'
         continue-on-error: true
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
